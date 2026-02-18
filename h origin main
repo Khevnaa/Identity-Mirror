@@ -1,0 +1,24 @@
+* [33mc981763[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m docs: update README
+*   [33mb3c62b4[m Resolve merge conflict
+[32m|[m[33m\[m  
+[32m|[m * [33m72f9591[m[33m ([m[1;31morigin/codex/create-production-grade-backend-implementation-plan-3mjto7[m[33m, [m[1;31morigin/backend-plan-2[m[33m, [m[1;32mbackend-plan-2[m[33m)[m chore: scaffold phase 1 backend foundational infrastructure
+[32m|[m * [33ma43fb83[m docs: reconcile phase 1 backend plan into single canonical spec
+* [33m|[m   [33ma7768e8[m Merge pull request #6 from Khevnaa/codex/create-production-grade-backend-implementation-plan
+[34m|[m[35m\[m [33m\[m  
+[34m|[m * [33m\[m   [33m165e954[m[33m ([m[1;31morigin/codex/create-production-grade-backend-implementation-plan[m[33m, [m[1;32mbackend-plan[m[33m)[m Merge pull request #5 from Khevnaa/main
+[34m|[m [36m|[m[34m\[m [33m\[m  
+[34m|[m [36m|[m[34m/[m [33m/[m  
+[34m|[m[34m/[m[36m|[m [33m|[m   
+* [36m|[m [33m|[m [33mc486aac[m Merge pull request #3 from Khevnaa/codex/create-production-grade-backend-implementation-plan
+[33m|[m[36m\[m[36m|[m [33m|[m 
+[33m|[m [36m|[m[33m/[m  
+[33m|[m[33m/[m[36m|[m   
+[33m|[m * [33md362544[m docs: add phase 1 backend implementation plan for go api
+[33m|[m[33m/[m  
+*   [33mee78360[m Merge pull request #1 from Khevnaa/codex/create-readme-for-identity-mirror-phase-1
+[1;34m|[m[1;35m\[m  
+[1;34m|[m * [33m5d5db85[m[33m ([m[1;31morigin/codex/create-readme-for-identity-mirror-phase-1[m[33m)[m docs: add phase 1 system architecture to README
+[1;34m|[m[1;34m/[m  
+[1;34m|[m * [33m04dbf26[m[33m ([m[1;31morigin/codex/create-readme-for-identity-mirror-phase-1-dyqa2t[m[33m)[m docs: add phase 1 invariant enforcement audit matrix
+[1;34m|[m[1;34m/[m  
+* [33m187cfcc[m Initial commit
