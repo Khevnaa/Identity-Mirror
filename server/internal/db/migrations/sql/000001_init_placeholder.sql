@@ -1,0 +1,2 @@
+-- Phase 1 canonical schema migrations are intentionally added in subsequent steps.
+-- This placeholder validates migration runner idempotency and version tracking infrastructure.
