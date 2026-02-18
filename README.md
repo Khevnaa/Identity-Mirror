@@ -90,6 +90,195 @@
     - Account-level cloud deletion request.
     - Data export (JSON + CSV derived metrics).
 
+## Phase 1 Hardening Review (Risk-Focused)
+
+### 1) Structural Integrity Review
+
+- **Boundary weakness: extraction, drift, and insight generation can become tightly coupled through shared mutable data models.**
+  - **Refinement:** enforce append-only handoff contracts: `RawUsageLog[] -> DailyBehaviorFeatures -> DriftMetricsWeekly -> InsightPrimitives`. No downstream module may mutate upstream artifacts.
+- **Ownership ambiguity: both Sync Client and Privacy Controls can write/delete overlapping persisted entities.**
+  - **Refinement:** require a single persistence coordinator with operation intents (`write_derived`, `sync_enqueue`, `local_wipe`, `deletion_lock`) and total ordering per `user_id` + `device_id`.
+- **Responsibility leak: Permission Manager policy can drift into capture adapters.**
+  - **Refinement:** adapters must be pure readers and return `permission_missing` sentinel outcomes; only Permission Manager owns permission state transitions and user messaging.
+
+### 2) Determinism Audit
+
+- **Hidden non-determinism risk: floating-point accumulation order during normalization and weekly aggregation can differ across platforms.**
+  - **Refinement:** define canonical arithmetic policy: stable summation order by dimension index (`learning`, `building`, `social`, `health`) and fixed decimal quantization (e.g., 1e-6) at every persisted boundary.
+- **Rounding edge risk: “sum exactly 1.0” can fail after independent rounding per component.**
+  - **Refinement:** use deterministic residual assignment: round first `n-1` components then set final component to `1.0 - sum(previous)`.
+- **Time-bucket non-determinism: local time-zone and DST transitions can shift day boundaries.**
+  - **Refinement:** derive day partitions using device local offset captured at interval start and persist the offset with each derived record.
+
+### 3) Data Integrity Audit
+
+- **Raw purge safety gap: purge trigger says “successful persistence + checksum verification” but no explicit atomicity guarantee.**
+  - **Refinement:** enforce single transaction: write derived record + write extraction receipt + mark purge-ready; purge only if receipt commit is durable.
+- **Checksum scope gap: current vector checksum does not explicitly include schema version, date bucket, or mapping config version.**
+  - **Refinement:** checksum input must be canonical serialization of (`payload`, `schema_version`, `date_bucket`, `category_map_version`, `device_id`).
+- **Schema upgrade risk: “soft constraints” may admit mixed interpretation of old/new vectors.**
+  - **Refinement:** reject cross-version arithmetic unless explicit deterministic migration function exists.
+- **Corruption recovery ambiguity: “attempt restore from last valid snapshot” lacks replay ordering rules.**
+  - **Refinement:** snapshot restore must replay only monotonic sequence IDs not yet committed in restored snapshot.
+
+### 4) Security & Cryptography Hardening
+
+- **Key lifecycle assumption gap: DEK/KEK rotation cadence and invalidation triggers are unspecified.**
+  - **Refinement:** define mandatory rotation triggers (logout, device compromise signal, refresh token replay detection, scheduled key epoch rollover).
+- **Envelope metadata tampering risk: if envelope metadata is unauthenticated, ciphertext swapping attacks remain possible.**
+  - **Refinement:** bind associated data (AAD) to `user_id`, `device_id`, `date_bucket`, `schema_version`, `ciphertext_hash`.
+- **Replay vector: idempotent `PUT` without strict nonce expiry can allow stale payload replay.**
+  - **Refinement:** idempotency keys must be single-use per route + user + device, with server-side TTL and payload hash binding.
+- **Refresh rotation gap: rotation is stated but race behavior for concurrent refresh requests is not.**
+  - **Refinement:** accept only first refresh in family chain, revoke descendants on reuse, and force re-auth on detected replay.
+- **Attack surface leak: export and deletion status endpoints can reveal account existence patterns.**
+  - **Refinement:** return uniform timing-safe error envelopes for unauthorized and unknown resources.
+
+### 5) Mobile OS Behavior Risk Analysis
+
+- **iOS scheduling reality: background execution for extraction is not guaranteed daily.**
+  - **Refinement:** extraction must run opportunistically on app foreground and process missed days deterministically.
+- **Android OEM process killing: scheduled jobs can be deferred or dropped.**
+  - **Refinement:** maintain durable “last successful extraction day” cursor and catch-up loop with bounded per-launch work budget.
+- **Permission churn race: revocation can occur between pre-check and capture read.**
+  - **Refinement:** adapters must re-check permission at read time and emit an auditable `permission_missing` day artifact.
+- **Battery optimization effects: prolonged background limits can delay purge.**
+  - **Refinement:** TTL enforcement must run on every app foreground and before sync/export.
+- **Device time drift/manipulation: interval ordering and week assignment can be corrupted.**
+  - **Refinement:** store monotonic capture sequence IDs and quarantine records with retrograde wall-clock jumps.
+
+### 6) Sync & Multi-device Conflict Hardening
+
+- **Last-write-wins flaw: server timestamp LWW can be semantically wrong for offline devices and clock skew.**
+  - **Refinement:** use deterministic precedence tuple: (`declarationVersion`, `client_logical_counter`, `server_receive_order`).
+- **Version vector incompleteness: day-level vectors from multiple devices can overwrite independent contributions.**
+  - **Refinement:** merge unit must be `(user_id, date_bucket, device_id)` first, then deterministic weekly union with dedupe checksum.
+- **Race condition: upload and delete can execute concurrently.**
+  - **Refinement:** `deletion_pending` must hard-block all mutating sync writes at gateway middleware.
+- **Partial failure: declaration upload success with vector upload failure can create cross-table inconsistency.**
+  - **Refinement:** require sync batch manifests with per-item commit receipts and resumable retry from first unacknowledged item.
+
+### 7) Performance & Resource Constraints
+
+- **Low-end device memory risk: minute-resolution expansion can spike RAM for long active days.**
+  - **Refinement:** process intervals as streaming iterators; avoid materializing full-day minute arrays.
+- **CPU pressure risk: overlap merge + switch counting can be O(n log n) with large interval sets.**
+  - **Refinement:** sort once, single linear pass merge, then single linear pass feature extraction.
+- **Local DB growth drift: derived-only policy still accumulates indefinitely without retention controls.**
+  - **Refinement:** define explicit retention horizons for local derived history and compaction checkpoints.
+- **Background execution budget risk: catch-up work can starve UI launch responsiveness.**
+  - **Refinement:** cap extraction workload per session and persist continuation cursor.
+
+### 8) Compliance & Store Review Risk
+
+- **App Store review risk: Screen Time / Device Activity claims can be rejected if user value proposition and data map are not explicit in UX.**
+  - **Refinement:** permission pre-prompt must enumerate exact fields captured, retention TTL, and non-upload guarantee for raw logs.
+- **Policy mismatch risk: privacy copy may promise “never exported raw data” while local raw-included export mode exists (even if off by default).**
+  - **Refinement:** policy text must explicitly state raw export is local-only, explicit opt-in, and never cloud-synced.
+- **Perceived surveillance risk: background collection without visible status can trigger trust/support escalations.**
+  - **Refinement:** expose deterministic “data coverage + permission state + last extraction run” diagnostics in-app.
+
+### 9) Scalability Reality Check
+
+- **At 10K users: first pressure point is idempotency and refresh-token state lookups under bursty mobile retries.**
+  - **Refinement:** bounded-size token family index + idempotency cache with strict TTL eviction.
+- **At 100K users: first pressure point is deletion/export worker backlog and SLA misses.**
+  - **Refinement:** isolate job queues per operation type, enforce retry ceilings, and dead-letter visibility.
+- **At 1M users: first pressure point is hot partitions in daily vector tables and conflict-heavy multi-device merges.**
+  - **Refinement:** partition by month + hashed user shard key, and precompute deterministic merge materializations incrementally.
+
+### 10) Concrete Refinement Actions (Phase 1 only)
+
+- Add explicit invariants and reject-write conditions (below) as normative contract.
+- Add lifecycle and failure guarantees (below) to eliminate scheduler/permission ambiguity.
+- Add cryptographic assumptions and AAD binding rules (below) to harden envelope integrity.
+- Add deterministic conflict precedence tuple and deletion-write exclusion rule to sync contract.
+- Add canonical numeric policy (summation order + quantization + residual assignment) to remove cross-platform drift.
+
+## Explicit Phase 1 Invariants (Normative)
+
+1. **Identity vector invariants**
+   - Post-normalization `priorityWeights` must satisfy: all components `>= 0`, deterministic key order (`learning`, `building`, `social`, `health`), and exact sum `1.0` after residual assignment.
+   - If all user-provided weights are non-positive, persist fallback `[0.25, 0.25, 0.25, 0.25]` and set `invalid_declaration` flag.
+
+2. **Feature invariants**
+   - `DailyBehaviorFeatures.categoryDistribution` must sum to `1.0 ± 1e-6` when `totalActiveMinutes > 0`, else all zeros.
+   - `fragmentationIndex`, `lateNightUsageRatio` must remain within `[0,1]`; out-of-range computation is a hard extraction failure.
+   - Each day has at most one committed derived feature record per `(user_id, device_id, local_date_bucket, schema_version)`.
+
+3. **Purge invariants**
+   - Raw logs are purge-eligible only after durable commit of derived record + checksum + extraction receipt.
+   - No sync/export path may read raw logs.
+   - Raw logs older than TTL must be deleted on first foreground after TTL breach, regardless of scheduler status.
+
+4. **Sync invariants**
+   - Mutating sync operations are rejected when account state is `deletion_pending`.
+   - Conflict resolution precedence is deterministic and stable: (`declarationVersion`, `client_logical_counter`, `server_receive_order`).
+   - Idempotency key reuse with payload mismatch is a hard reject.
+
+5. **Schema invariants**
+   - Cross-version arithmetic is forbidden unless a deterministic migration function is defined and version-pinned.
+   - Checksums must cover schema version and mapping config version to prevent semantic collisions.
+
+## Explicit Lifecycle Guarantees
+
+1. **Capture-to-extract guarantee**
+   - On every app foreground, system performs: permission re-check -> TTL enforcement -> extraction catch-up for missed days (bounded work budget).
+
+2. **Extraction guarantee**
+   - Extraction is deterministic for identical input logs, mapping version, timezone offset capture policy, and schema version.
+   - Extraction must be restart-safe via persisted continuation cursor and idempotent day commit semantics.
+
+3. **Permission-state guarantee**
+   - Permission revocation immediately halts new capture and emits `permission_missing` quality artifacts; existing derived history remains readable.
+
+4. **Deletion lifecycle guarantee**
+   - Local wipe acquires `deletion_lock`, clears local encrypted stores and auth material, and blocks new local writes until completion marker is durable.
+   - Cloud deletion request transitions account to `deletion_pending` before backend hard-delete workflow begins.
+
+5. **Sync lifecycle guarantee**
+   - Sync batches produce per-item commit receipts; retries resume from first unacknowledged item without reordering acknowledged items.
+
+## Explicit Failure Mode Guarantees
+
+1. **Extractor crash guarantee**
+   - No partial derived writes are visible; either full day commit succeeds or day remains pending retry.
+
+2. **Corruption guarantee**
+   - Corrupted partitions are isolated by date bucket; healthy partitions remain readable.
+   - Restore replay is monotonic by sequence ID to prevent duplicate or out-of-order recomputation.
+
+3. **Network/backend outage guarantee**
+   - Local deterministic pipeline (declaration, extraction, drift, weekly deterministic insight) remains fully functional without cloud availability.
+
+4. **AI renderer failure guarantee**
+   - Deterministic template summary is always produced from approved derived fields; no pipeline step depends on AI response for completion.
+
+5. **Clock anomaly guarantee**
+   - Records with retrograde jumps beyond defined threshold are quarantined and excluded from scoring until manual/automatic repair.
+
+## Explicit Cryptographic Assumptions & Constraints
+
+1. **Envelope encryption assumptions**
+   - Payload encryption uses AES-256-GCM per record with unique nonce per encryption event.
+   - AAD must bind: `user_id`, `device_id`, `date_bucket`, `schema_version`, `category_map_version`, `ciphertext_hash`.
+
+2. **Key management assumptions**
+   - DEKs are device-local ephemeral data keys used only for payload class scope; KEK wrapping keys are never persisted in plaintext application storage.
+   - Key rotation triggers: logout, compromise signal, refresh replay detection, scheduled epoch rollover.
+
+3. **Token/session assumptions**
+   - Access JWT is short-lived and non-revocable by design; refresh token family enforces one-time-use rotation with replay invalidation.
+   - Concurrent refresh requests for same token family must deterministically accept one and invalidate remainder.
+
+4. **Replay resistance constraints**
+   - Idempotency keys are single-use within TTL and bound to canonical payload hash + route + actor identifiers.
+   - Replayed request with mismatched payload hash must be rejected and audited.
+
+5. **Export/deletion confidentiality constraints**
+   - Export artifacts require short-lived signed URLs and single-download invalidation where platform allows.
+   - Deletion/export status endpoints must return uniform error envelopes to avoid account enumeration.
+
 ## Backend Architecture Breakdown
 
 1. **API Gateway Layer (Go HTTP server)**
