@@ -2,19 +2,26 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 
 	"identitymirror/server/internal/config"
 	"identitymirror/server/internal/db"
+	"identitymirror/server/internal/identity"
 	"identitymirror/server/internal/logger"
+	"identitymirror/server/internal/transport/httpapi"
 )
 
 type App struct {
-	cfg      config.Config
-	logger   *logger.Logger
-	database *db.Database
-	migrator *db.Migrator
-	txRunner *db.TxRunner
+	cfg             config.Config
+	logger          *logger.Logger
+	database        *db.Database
+	migrator        *db.Migrator
+	txRunner        *db.TxRunner
+	httpServer      *http.Server
+	identityService identity.Service
 }
 
 type Error struct {
@@ -52,26 +59,60 @@ func New(ctx context.Context) (*App, error) {
 		return nil, &Error{Operation: "build migrator", Cause: err}
 	}
 
-	return &App{
-		cfg:      cfg,
-		logger:   log,
-		database: database,
-		migrator: migrator,
-		txRunner: db.NewTxRunner(database),
-	}, nil
+	app := &App{
+		cfg:             cfg,
+		logger:          log,
+		database:        database,
+		migrator:        migrator,
+		txRunner:        db.NewTxRunner(database),
+		identityService: identity.NewInMemoryService(),
+	}
+	handler := httpapi.NewHandler(app, app.identityService)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	app.httpServer = &http.Server{
+		Addr:         ":" + strconv.Itoa(cfg.HTTP.Port),
+		Handler:      mux,
+		ReadTimeout:  cfg.HTTP.ReadTimeout,
+		WriteTimeout: cfg.HTTP.WriteTimeout,
+		IdleTimeout:  cfg.HTTP.IdleTimeout,
+	}
+
+	return app, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
 	if err := a.migrator.Run(ctx); err != nil {
 		return &Error{Operation: "run migrations", Cause: err}
 	}
-	a.logger.Info(ctx, "foundation initialized", "env", a.cfg.Environment)
+
+	a.logger.Info(ctx, "foundation initialized", "env", a.cfg.Environment, "http_addr", a.httpServer.Addr)
+
+	go func() {
+		if err := a.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.logger.Error(context.Background(), "http server stopped", "error", err.Error())
+		}
+	}()
+
 	return nil
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
 	a.logger.Info(ctx, "shutting down")
-	return a.database.Close()
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, a.cfg.HTTP.ShutdownTimeout)
+	defer cancel()
+
+	if err := a.httpServer.Shutdown(shutdownCtx); err != nil {
+		return &Error{Operation: "shutdown http server", Cause: err}
+	}
+
+	if err := a.database.Close(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (a *App) HealthCheck(ctx context.Context) error {
