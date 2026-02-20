@@ -1,6 +1,8 @@
 package app
 
-import (
+import ( 
+	"net/http"
+	"time"
 	"context"
 	"fmt"
 
@@ -15,6 +17,8 @@ type App struct {
 	database *db.Database
 	migrator *db.Migrator
 	txRunner *db.TxRunner
+
+	httpServer *http.Server
 }
 
 type Error struct {
@@ -61,16 +65,64 @@ func New(ctx context.Context) (*App, error) {
 	}, nil
 }
 
+// func (a *App) Start(ctx context.Context) error {
+// 	if err := a.migrator.Run(ctx); err != nil {
+// 		return &Error{Operation: "run migrations", Cause: err}
+// 	}
+// 	a.logger.Info(ctx, "foundation initialized", "env", a.cfg.Environment)
+// 	return nil
+// }
 func (a *App) Start(ctx context.Context) error {
 	if err := a.migrator.Run(ctx); err != nil {
 		return &Error{Operation: "run migrations", Cause: err}
 	}
+
+	mux := http.NewServeMux()
+
+	// Health route
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.HealthCheck(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("unhealthy"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	a.httpServer = &http.Server{
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			a.logger.Error(ctx, "http server failed", "error", err)
+		}
+	}()
+
 	a.logger.Info(ctx, "foundation initialized", "env", a.cfg.Environment)
+	a.logger.Info(ctx, "http server started", "port", 8080)
+
 	return nil
 }
 
+// func (a *App) Shutdown(ctx context.Context) error {
+// 	a.logger.Info(ctx, "shutting down")
+// 	return a.database.Close()
+// }
 func (a *App) Shutdown(ctx context.Context) error {
 	a.logger.Info(ctx, "shutting down")
+
+	if a.httpServer != nil {
+		if err := a.httpServer.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+
 	return a.database.Close()
 }
 
