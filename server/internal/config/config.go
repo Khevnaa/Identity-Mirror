@@ -13,6 +13,15 @@ type Config struct {
 
 	Database DatabaseConfig
 	Migrate  MigrationConfig
+	HTTP     HTTPConfig
+}
+
+type HTTPConfig struct {
+	Port            int
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
+	ShutdownTimeout time.Duration
 }
 
 type DatabaseConfig struct {
@@ -106,6 +115,34 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	httpPort, err := requiredInt("HTTP_PORT")
+	if err != nil {
+		return Config{}, err
+	}
+	if httpPort < 1 || httpPort > 65535 {
+		return Config{}, &Error{Field: "HTTP_PORT", Message: "must be between 1 and 65535"}
+	}
+
+	httpReadTimeout, err := requiredDuration("HTTP_READ_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	httpWriteTimeout, err := requiredDuration("HTTP_WRITE_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	httpIdleTimeout, err := requiredDuration("HTTP_IDLE_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	httpShutdownTimeout, err := requiredDuration("HTTP_SHUTDOWN_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	if httpReadTimeout <= 0 || httpWriteTimeout <= 0 || httpIdleTimeout <= 0 || httpShutdownTimeout <= 0 {
+		return Config{}, &Error{Field: "HTTP_*", Message: "all durations must be > 0"}
+	}
+
 	return Config{
 		Environment: env,
 		LogLevel:    logLevel,
@@ -121,6 +158,13 @@ func Load() (Config, error) {
 			HealthCheckTimeout: healthTimeout,
 		},
 		Migrate: MigrationConfig{Directory: migrationsDir},
+		HTTP: HTTPConfig{
+			Port:            httpPort,
+			ReadTimeout:     httpReadTimeout,
+			WriteTimeout:    httpWriteTimeout,
+			IdleTimeout:     httpIdleTimeout,
+			ShutdownTimeout: httpShutdownTimeout,
+		},
 	}, nil
 }
 
@@ -154,4 +198,16 @@ func requiredDuration(key string) (time.Duration, error) {
 		return 0, &Error{Field: key, Message: "must be a valid duration"}
 	}
 	return duration, nil
+}
+
+func requiredInt(key string) (int, error) {
+	value, err := requiredString(key)
+	if err != nil {
+		return 0, err
+	}
+	parsed, parseErr := strconv.Atoi(value)
+	if parseErr != nil {
+		return 0, &Error{Field: key, Message: "must be a valid integer"}
+	}
+	return parsed, nil
 }
