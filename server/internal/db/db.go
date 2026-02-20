@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"identitymirror/server/internal/config"
+	
 )
 
 type Database struct {
@@ -29,7 +31,9 @@ func (e *Error) Unwrap() error {
 }
 
 func New(ctx context.Context, cfg config.DatabaseConfig) (*Database, error) {
-	db, err := sql.Open("postgres", cfg.URL)
+	// db, err := sql.Open("postgres", cfg.URL)
+	db, err := sql.Open("pgx", cfg.URL)	
+	
 	if err != nil {
 		return nil, &Error{Operation: "open connection", Cause: err}
 	}
